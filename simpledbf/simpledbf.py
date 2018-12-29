@@ -19,19 +19,45 @@ else:
         print("SQLalchemy is not installed. No support for SQL output.")
 
 sqltypes = {
-        'sqlite': {'str':'TEXT', 'float':'REAL', 'int': 'INTEGER', 
-            'date':'TEXT', 'bool':'INTEGER', 
+        'sqlite': {'str':'TEXT', 'float':'REAL', 'int': 'INTEGER',
+            'date':'TEXT', 'bool':'INTEGER', 'memo':'TEXT',
             'end': '.mode csv {table}\n.import {csvname} {table}',
             'start': 'CREATE TABLE {} (\n',
             'index': '"index" INTEGER PRIMARY KEY ASC',
             },
-        'postgres': {'str': 'text', 'float': 'double precision', 
-            'int':'bigint', 'date':'date', 'bool':'boolean',
+        'postgres': {'str': 'text', 'float': 'double precision',
+            'int':'bigint', 'date':'date', 'bool':'boolean','memo':'text',
             'end': '''\copy "{table}" from '{csvname}' delimiter ',' csv''',
             'start': 'CREATE TABLE "{}" (\n',
             'index': '"index" INTEGER PRIMARY KEY',
             },
         }
+
+#https://www.dbase.com/Knowledgebase/INT/db7_file_fmt.htm
+#https://www.clicketyclick.dk/databases/xbase/format/dbf.html#DBF_NOTE_1_TARGET
+DBF_VERSIONS = {
+        2 : "FoxBase",
+        3 : "File without DBT",
+        4 : "dBASE IV w/o memo file",
+        5 : "dBASE V w/o memo file",
+        7 : "VISUAL OBJECTS (first 1.0 versions) for the Dbase III files w/o memo file",
+        48 : "Visual FoxPro",
+        48 : "Visual FoxPro w. DBC",
+        49 : "Visual FoxPro w. AutoIncrement field",
+        67 : ".dbv memo var size (Flagship)",
+        123 : "dBASE IV with memo",
+        131 : "File with DBT",
+        131 : "dBASE III+ with memo file",
+        135 : "VISUAL OBJECTS (first 1.0 versions) for the Dbase III files (NTX clipper driver) with memo file",
+        139 : "dBASE IV w. memo",
+        142 : "dBASE IV w. SQL table",
+        179 : ".dbv and .dbt memo (Flagship)",
+        229 : "Clipper SIX driver w. SMT memo file.Note! Clipper SIX driver sets lowest 3 bytes to 110 in descriptor of crypted databases. So, 3->6, 83h->86h, F5->F6, E5->E6 etc.",
+        245 : "FoxPro w. memo file",
+        251 : "FoxPro ???"
+    }
+
+b2i_LE = lambda cmd: int.from_bytes(cmd, byteorder='little', signed=False)
 
 class DbfBase(object):
     '''
@@ -46,7 +72,7 @@ class DbfBase(object):
         Parameters
         ----------
         chunksize : int
-            The maximum chunk size 
+            The maximum chunk size
 
         Returns
         -------
@@ -63,7 +89,7 @@ class DbfBase(object):
             chunks = [chunksize,]*num
             remain = self.numrec%chunksize
             if remain != 0:
-                chunks.append(remain) 
+                chunks.append(remain)
             return chunks
 
     def _na_set(self, na):
@@ -86,7 +112,7 @@ class DbfBase(object):
             self._na = float('nan')
         else:
             self._na = na
-        
+
     def mem(self, chunksize=None):
         '''Print the memory usage for processing the DBF File.
 
@@ -103,7 +129,7 @@ class DbfBase(object):
         will also print memory usage per chunk as well, which can be useful
         for efficiently chunking and processing a file.
         '''
-        if chunksize: 
+        if chunksize:
             if chunksize > self.numrec:
                 print("Chunksize larger than number of recs.")
                 print("Chunksize set to {:d}.".format(self.numrec))
@@ -113,7 +139,7 @@ class DbfBase(object):
                 print(chkout.format(smallmem))
         memory = 2.*(self.fmtsiz*self.numrec/1024**2)
         out = "This total process would require more than {:.4g} MB of RAM."
-        print(out.format(memory))      
+        print(out.format(memory))
 
     def to_csv(self, csvname, chunksize=None, na='', header=True):
         '''Write DBF file contents to a CSV file.
@@ -141,17 +167,17 @@ class DbfBase(object):
             however, float/int columns are always float('nan').
 
         header : boolean, optional
-            Write out a header line with the column names. Default is True. 
+            Write out a header line with the column names. Default is True.
         '''
         self._na_set(na)
         # set index column; this is only True when used with to_textsql()
         self._idx = False
-        csv = codecs.open(csvname, 'a', encoding=self._enc)
+        csv = codecs.open(csvname, 'a', encoding=self._enc_out )
         if header:
             column_line = ','.join(self.columns)
             csv.write(column_line + '\n')
 
-        # Build up a formatting string for output. 
+        # Build up a formatting string for output.
         outs = []
         for field in self.fields:
             if field[0] == "DeletionFlag":
@@ -167,14 +193,14 @@ class DbfBase(object):
                 outs.append('{}')
         # Make the outline unicode or it won't write out properly for UTF-8
         out_line = u','.join(outs) + '\n'
-        
+
         count = 0
         for n, result in enumerate(self._get_recs()):
             if self._idx:
                 out_string = out_line.format(n, *result)
             else:
                 out_string = out_line.format(*result)
-            
+
             csv.write(out_string)
             count += 1
             if count == chunksize:
@@ -206,7 +232,7 @@ class DbfBase(object):
             Table name to generate. If None (default), the table name will be
             the name of the DBF input file without the file extension.
             Otherwise, the given string will be used.
-        
+
         chunksize : int, option
             Number of chunks to process CSV creation. Defalut is None. See
             `to_csv`.
@@ -255,7 +281,7 @@ class DbfBase(object):
             if name in self._dtypes:
                 dtype = self._dtypes[name]
                 outtype = sqldict[dtype]
-            else: 
+            else:
                 # If the column does not have a type, probably all missing
                 # Try out best to make it the correct type for self._na
                 if typ == 'C':
@@ -333,12 +359,12 @@ class DbfBase(object):
         for chunk in chunks:
             results = list(self._get_recs(chunk=chunk))
             num = len(results) # Avoids skipped records problem
-            df = pd.DataFrame(results, columns=self.columns, 
+            df = pd.DataFrame(results, columns=self.columns,
                               index=range(idx, idx+num))
             idx += num
-            del(results) 
+            del(results)
             yield df
-    
+
     def to_pandassql(self, engine, table=None, chunksize=None, na='nan'):
         '''Write DBF contents to an SQL database using Pandas.
 
@@ -376,7 +402,7 @@ class DbfBase(object):
         if not table:
             table = self.dbf[:-4] # strip trailing ".dbf"
 
-        if isinstance(engine, str): 
+        if isinstance(engine, str):
             engine_inst = sql.create_engine(engine)
         elif isinstance(engine, sql.engine.Engine):
             engine_inst = engine
@@ -393,7 +419,7 @@ class DbfBase(object):
                 # Right now, Pandas doesn't support string length
                 # Should work fine for sqlite and postgresql
                 dtype[field[0]] = sql.types.String#(field[2])
-        
+
         # The default behavior is to append new data to existing tables.
         if not chunksize:
             df = self.to_dataframe()
@@ -403,8 +429,8 @@ class DbfBase(object):
                 df.to_sql(table, engine_inst, dtype=dtype, if_exists='append')
         del(df)
 
-        
-    def to_pandashdf(self, h5name, table=None, chunksize=None, na='nan', 
+
+    def to_pandashdf(self, h5name, table=None, chunksize=None, na='nan',
             complevel=9, complib='blosc', data_columns=None):
         '''Write DBF contents to an HDF5 file using Pandas.
 
@@ -482,7 +508,7 @@ class DbfBase(object):
                 h5.append(table, df, min_itemsize=max_string_len,
                         data_columns=data_columns)
                 h5.flush(fsync=True)
-        
+
         del(df)
         h5.close()
 
@@ -507,6 +533,10 @@ class Dbf5(DbfBase):
         The codec to use when decoding text-based records. The default is
         'utf-8'. See Python's `codec` standard lib module for other options.
 
+    utf8out : boolean
+        If the output should be in utf-8.
+        The default is False (output will be the same as codec.
+
     Attributes
     ----------
 
@@ -518,7 +548,7 @@ class Dbf5(DbfBase):
 
     numrec : int
         The number of records contained in this file.
-    
+
     lenheader : int
         The length of the file header in bytes.
 
@@ -536,9 +566,28 @@ class Dbf5(DbfBase):
 
     fmtsiz : int
         The size of each record in bytes.
+
+    memo_file : string
+        The path to .dbt file.
+        None if not an existing or not valid.
+
+    memo_next_free_block : int
+        The next available block.
+        Useful only for writing, or for checks.
+
+    memo_block_length : int
+        The length of a memo block in bytes.
+
+    _enc_out : str
+        The encoding for the output.
+        Currently only used for the csv.
     '''
-    def __init__(self, dbf, codec='utf-8'):
+    def __init__(self, dbf, codec='utf-8', utf8out=False):
         self._enc = codec
+        self._enc_out = 'utf-8' if utf8out else codec
+        #get memo args
+        self.get_memo_args(dbf)
+
         path, name = os.path.split(dbf)
         self.dbf = name
         # Escape quotes, set by indiviual runners
@@ -546,29 +595,56 @@ class Dbf5(DbfBase):
         # Reading as binary so bytes will always be returned
         self.f = open(dbf, 'rb')
 
-        self.numrec, self.lenheader = struct.unpack('<xxxxLH22x', 
-                self.f.read(32))    
+        self.dbf_version, self.numrec, self.lenheader = struct.unpack('<BxxxLH22x',
+                self.f.read(32))
         self.numfields = (self.lenheader - 33) // 32
 
         # The first field is always a one byte deletion flag
         fields = [('DeletionFlag', 'C', 1),]
         for fieldno in range(self.numfields):
             name, typ, size = struct.unpack('<11sc4xB15x', self.f.read(32))
-            # eliminate NUL bytes from name string  
-            name = name.strip(b'\x00')        
+            # eliminate NUL bytes from name string
+            name = name.strip(b'\x00')
             fields.append((name.decode(self._enc), typ.decode(self._enc), size))
         self.fields = fields
         # Get the names only for DataFrame generation, skip delete flag
         self.columns = [f[0] for f in self.fields[1:]]
-        
+
         terminator = self.f.read(1)
         assert terminator == b'\r'
-     
+
         # Make a format string for extracting the data. In version 5 DBF, all
         # fields are some sort of structured string
-        self.fmt = ''.join(['{:d}s'.format(fieldinfo[2]) for 
+        self.fmt = ''.join(['{:d}s'.format(fieldinfo[2]) for
                             fieldinfo in self.fields])
         self.fmtsiz = struct.calcsize(self.fmt)
+        if self.dbf_version in DBF_VERSIONS:
+            print('dbf version:',DBF_VERSIONS[self.dbf_version])
+        else:
+            print('Unknown dbf version')
+
+    def get_memo_args(self, thedbffile):
+        '''Get memo file and block length.
+
+        Parameters
+        ----------
+        thedbffile : str, mandatory
+            The path to dbf in use.
+        '''
+        fullpath = os.path.abspath(thedbffile)
+        if fullpath[-1]=='F':
+            self.memo_file = fullpath[:-1]+'T'
+        else:
+            self.memo_file = fullpath[:-1]+'t'
+        #Only files that have the same case are take into concideration
+        if os.path.exists(self.memo_file):
+            with open(self.memo_file, 'rb') as memo_f:
+                headerblock = memo_f.read(22)
+            next_free_block, dbfname, block_length = struct.unpack('<L4x8s4xH', headerblock)
+            self.memo_next_free_block = next_free_block
+            self.memo_block_length = block_length
+        else:
+            self.memo_file = None
 
     def _get_recs(self, chunk=None):
         '''Generator that returns individual records.
@@ -586,9 +662,9 @@ class Dbf5(DbfBase):
             # Extract a single record
             record = struct.unpack(self.fmt, self.f.read(self.fmtsiz))
             # If delete byte is not a space, record was deleted so skip
-            if record[0] != b' ': 
-                continue  
-            
+            if record[0] != b' ':
+                continue
+
             # Save the column types for later
             self._dtypes = {}
             result = []
@@ -630,6 +706,15 @@ class Dbf5(DbfBase):
                             # Otherwise floats were not showing up correctly
                             value = float('nan')
 
+                # Integer type. Stored as string
+                elif typ == "I":
+                    if name not in self._dtypes:
+                        self._dtypes[name] = "int"
+                    try:
+                        value = int(value)
+                    except:
+                        value = int('nan')
+
                 # Date stores as string "YYYYMMDD", convert to datetime
                 elif typ == 'D':
                     try:
@@ -663,10 +748,57 @@ class Dbf5(DbfBase):
                     except:
                         value = float('nan')
 
+                # Memo field. Currently only dbase IV supported.
+                #TODO: escape \r\n
+                elif typ == 'M':
+                    if name not in self._dtypes:
+                        self._dtypes[name] = "str"
+                    if self.dbf_version == 139:
+                        try:
+                            memoblock = int(value)
+                        except:
+                            memoblock = None
+                        if memoblock and memoblock > 0:
+                            ok, value = self.get_memo_text(memoblock)
+                            if not ok:
+                                value = self._na
+                        else:
+                            value = self._na
+                    else:
+                        #TODO: return a string value
+                        #with the block number or something like
+                        # «memo not yet supported for this dbf»
+                        value = self._na
+
                 else:
                     err = 'Column type "{}" not yet supported.'
                     raise ValueError(err.format(value))
 
                 result.append(value)
             yield result
-    
+
+    def get_memo_text(self, memo_block):
+        if self.memo_file == None:
+            return False,''
+        with open (self.memo_file, 'rb') as memof:
+            text_buffer = b''
+            try:
+                memof.seek(memo_block * self.memo_block_length , 0)
+                ablock = memof.read(self.memo_block_length )
+                if ablock[:4] == b'\xff\xff\x08\x00':
+                    datalength = b2i_LE(ablock[4:8])
+                    text_buffer = ablock[8:]
+                    remaininglength = datalength - self.memo_block_length - 8
+                    while True:
+                        if remaininglength <= 0:
+                            return True, text_buffer.decode(self._enc)
+                        else:
+                            ablock = memof.read(min(remaininglength, self.memo_block_length))
+                            text_buffer += ablock
+                            remaininglength -= len(ablock)
+                else:
+                    return False,''
+
+            except Exception as e:
+                print('EXCEPTION', e)
+                return False, ''
